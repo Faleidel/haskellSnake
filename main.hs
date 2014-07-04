@@ -46,18 +46,22 @@ playerBody = Polygon
 
 data GameState = GameState
     {
+        --the player is a list of position
         _player :: [(Float,Float)] ,
-        _grow :: Bool ,
+        _grow :: Bool , -- will the player grow a block longer
         _playerDirection :: Direction ,
         _movementCoolDown :: Int ,
         _redBoxes :: [RedBox]
-    } | DeadState
+    } | DeadState -- main menu and game over state
 makeLenses ''GameState
 
+-- get a random number and scale back to a position in stage
 prosValForPos g = ( fromInteger (g `mod` ( floor $ gameSize/gameScale)) :: Float  ) - (gameSize/gameScale/2.0)
 
 box x y = RedBox { _redBoxX = x , _redBoxY = y }
 
+--The Integer list is an infinit list of random numbers
+genBoxes :: [Integer] -> Int -> [RedBox]
 genBoxes _           0 = []
 genBoxes (v1:v2:seq) n = (  box (prosValForPos v1) (prosValForPos v2)  ):( genBoxes seq (n-1)  )
 
@@ -80,9 +84,9 @@ isUp _ = False
 isDown (EventKey (SpecialKey KeyDown) Down _ _) = True
 isDown _ = False
 
-eventKey (EventKey (SpecialKey KeyDown) Down _ _) =  Just DDown
-eventKey (EventKey (SpecialKey KeyUp) Down _ _)   =  Just DUp
-eventKey (EventKey (SpecialKey KeyLeft) Down _ _) =  Just DLeft
+eventKey (EventKey (SpecialKey KeyDown) Down _ _)  = Just DDown
+eventKey (EventKey (SpecialKey KeyUp) Down _ _)    = Just DUp
+eventKey (EventKey (SpecialKey KeyLeft) Down _ _)  = Just DLeft
 eventKey (EventKey (SpecialKey KeyRight) Down _ _) = Just DRight
 eventKey _ = Nothing
 
@@ -115,6 +119,7 @@ movePlayer (px,py) DRight = ( px+1 , py   )
 movePlayer (px,py) DLeft  = ( px-1 , py   )
 movePlayer (px,py) DDown  = ( px   , py-1 )
 
+--Will return True if the box is on the player position provided
 boxOnPlayer :: ( Float , Float ) -> RedBox -> Bool
 boxOnPlayer (px,py) box = not ( (px == (_redBoxX box)) && (py == (_redBoxY box)) )
 
@@ -133,6 +138,7 @@ updateWorldPlayerPos world =
     else
         over movementCoolDown (pred) world
 
+--If the to listes are not of the same length, then you just eated some box and need to grow.
 setGrow w1 w2 = if ( (length $ _redBoxes w1) == (length $ _redBoxes w2) ) then
         w2
     else
@@ -148,6 +154,7 @@ updateWorldRedBoxesOverlap world =
         )
     $ world
 
+--Is the player folded on himself
 playerOverlap (x:[]) = False
 playerOverlap (x:xs) = if foldl ( || ) (False) $ map (==x) xs then
         True
@@ -184,6 +191,6 @@ drawPlayer (x,y) = Color (makeColor 1 1 1 1) $ Translate px py $ playerBody
 
 drawRedBox box = Color (makeColor 1 0 0 1) $ Translate ( _redBoxX box * gameScale ) ( _redBoxY box * gameScale ) $ playerBody
 
-render DeadState = return $ Pictures [ drawPlayer (0,0) ]
+render DeadState = return $ Pictures [ Scale (0.2) (0.2) $ Color ( makeColor 1 0 0 1 ) $ Translate ( -400 ) ( 0 ) $ Text "Presse f1 to start" ]
 render world = return $
     Pictures $ ( map (drawPlayer) (_player world) ) ++ ( map (drawRedBox) $ _redBoxes world )
