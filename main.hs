@@ -1,40 +1,60 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE BangPatterns #-}
 
 import Graphics.Gloss
 import Graphics.Gloss.Interface.IO.Game
-
 import Control.Lens
-
 import System.Random
 
+import System.IO.Unsafe
+
+data Direction = DUp | DRight | DDown | DLeft deriving (Eq,Enum,Show)
+
+next :: Direction -> Direction
+next DLeft = DUp
+next a = succ a
+
+data Box = Box
+    {
+        _boxX :: Float ,
+        _boxY :: Float 
+    }
+    deriving Show
+makeLenses ''Box
+
+data GameState = GameState
+    {
+        --the player is a list of position
+        _player :: [(Float,Float)] ,
+        _life :: Int ,
+        _grow :: Bool , -- will the player grow a block longer
+        _playerDirection :: Direction ,
+        _turned :: Bool ,
+        _movementCoolDown :: Int ,
+        _redBoxes :: [Box] ,
+        _greenBoxes :: [Box]
+    }
+    | DeadState -- main menu and game over state
+    deriving Show
+makeLenses ''GameState
+
+init' :: [a] -> [a]
 init' [] = []
 init' x = init x
 
 gameScale = 10.0
 gameSize = 500.0
 coolDown = 1
-
 gameWindowTitle = "Snake"
 
-data Direction = DLeft | DRight | DUp | DDown
-
 canTurn :: Direction -> Direction -> Bool
-canTurn DDown  DUp    = False
-canTurn DUp    DDown  = False
-canTurn DLeft  DRight = False
-canTurn DRight DLeft  = False
-canTurn _      _      = True
+canTurn a b = not $ (next $ next a) == b
 
+mCanTurn :: Maybe Direction -> Direction -> Bool
 mCanTurn (Just b) a = canTurn a b
 mCanTurn _ _ = False
 
-data RedBox = RedBox
-    {
-        _redBoxX :: Float ,
-        _redBoxY :: Float 
-    }
-makeLenses ''RedBox
-
+playerBody :: Picture
 playerBody = Polygon
     [
         ( -gameScale/2 , -gameScale/2 ) ,
@@ -44,62 +64,58 @@ playerBody = Polygon
         ( -gameScale/2 , -gameScale/2 )
     ]
 
-data GameState = GameState
-    {
-        --the player is a list of position
-        _player :: [(Float,Float)] ,
-        _grow :: Bool , -- will the player grow a block longer
-        _playerDirection :: Direction ,
-        _movementCoolDown :: Int ,
-        _redBoxes :: [RedBox]
-    } | DeadState -- main menu and game over state
-makeLenses ''GameState
-
 -- get a random number and scale back to a position in stage
+prosValForPos :: Integer -> Float
 prosValForPos g = ( fromInteger (g `mod` ( floor $ gameSize/gameScale)) :: Float  ) - (gameSize/gameScale/2.0)
 
-box x y = RedBox { _redBoxX = x , _redBoxY = y }
-
 --The Integer list is an infinit list of random numbers
-genBoxes :: [Integer] -> Int -> [RedBox]
-genBoxes _           0 = []
-genBoxes (v1:v2:seq) n = (  box (prosValForPos v1) (prosValForPos v2)  ):( genBoxes seq (n-1)  )
+genBoxes :: [Integer] -> Int -> ([Box],[Integer])
+genBoxes s           0 = ([],s)
+genBoxes (v1:v2:seq) n = ((  Box (prosValForPos v1) (prosValForPos v2)  ):( nl  )  ,  ns  )
+    where ns = snd g
+          nl = fst g
+          g = genBoxes seq (n-1)
 
+initWorld :: IO GameState
 initWorld = do
     g <- getStdGen
+    let (rb,g2) = genBoxes (randoms g :: [Integer]) 50
+    let (gb,g3) = genBoxes (g2) 50
     return $ GameState {
         _player = [(0,0)] ,
+        _life = 10 ,
         _grow = False ,
         _playerDirection = DLeft ,
-        _movementCoolDown = 10 , 
-        _redBoxes = genBoxes (randoms g :: [Integer]) 100
+        _turned = False ,
+        _movementCoolDown = 20 , 
+        _redBoxes = rb ,
+        _greenBoxes = gb
     }
 
-isLeft (EventKey (SpecialKey KeyLeft) Down _ _) = True
-isLeft _ = False
-isRight (EventKey (SpecialKey KeyRight) Down _ _) = True
-isRight _ = False
-isUp (EventKey (SpecialKey KeyUp) Down _ _) = True
-isUp _ = False
-isDown (EventKey (SpecialKey KeyDown) Down _ _) = True
-isDown _ = False
-
+eventKey :: Event -> Maybe Direction
 eventKey (EventKey (SpecialKey KeyDown) Down _ _)  = Just DDown
 eventKey (EventKey (SpecialKey KeyUp) Down _ _)    = Just DUp
 eventKey (EventKey (SpecialKey KeyLeft) Down _ _)  = Just DLeft
 eventKey (EventKey (SpecialKey KeyRight) Down _ _) = Just DRight
 eventKey _ = Nothing
 
+isf1 :: Event -> Bool
 isf1 (EventKey (SpecialKey KeyF1) Down _ _) = True
 isf1 _ = False
 
-turnPlayer e world = case e of
-     Just DDown   -> set playerDirection DDown  world
-     Just DUp     -> set playerDirection DUp    world
-     Just DRight  -> set playerDirection DRight world
-     Just DLeft   -> set playerDirection DLeft  world
-     Nothing        -> world
+turnPlayer :: Maybe Direction -> GameState -> GameState
+turnPlayer _ DeadState = DeadState
+turnPlayer _ (w@(GameState { _turned = True })) = w
+turnPlayer e w =
+    let world = w { _turned = True } in
+    case e of
+        Just DDown   -> set playerDirection DDown  world
+        Just DUp     -> set playerDirection DUp    world
+        Just DRight  -> set playerDirection DRight world
+        Just DLeft   -> set playerDirection DLeft  world
+        Nothing      -> world
 
+eventOnWorld :: Event -> GameState -> IO GameState
 eventOnWorld event DeadState =
     if isf1 event then do
         w <- initWorld
@@ -119,13 +135,15 @@ movePlayer (px,py) DRight = ( px+1 , py   )
 movePlayer (px,py) DLeft  = ( px-1 , py   )
 movePlayer (px,py) DDown  = ( px   , py-1 )
 
---Will return True if the box is on the player position provided
-boxOnPlayer :: ( Float , Float ) -> RedBox -> Bool
-boxOnPlayer (px,py) box = not ( (px == (_redBoxX box)) && (py == (_redBoxY box)) )
-
+updateWorldPlayerPos :: GameState -> GameState
+updateWorldPlayerPos DeadState = DeadState
 updateWorldPlayerPos world =
     if _movementCoolDown world < 1 then
-        noGrow $ (
+        ( set turned (False) ) .
+        updateWorldRedBoxesOverlap .
+        updateWorldGreenBoxesOverlap .
+        noGrow .
+        (
           over player
               (\l ->
                 if _grow world then
@@ -139,43 +157,62 @@ updateWorldPlayerPos world =
         over movementCoolDown (pred) world
 
 --If the to listes are not of the same length, then you just eated some box and need to grow.
-setGrow w1 w2 = if ( (length $ _redBoxes w1) == (length $ _redBoxes w2) ) then
-        w2
-    else
-        w2 { _grow = True }
+setGrow :: GameState -> GameState -> GameState
+setGrow w1 w2 = w2 { _grow = not $ (length $ _greenBoxes w1) == (length $ _greenBoxes w2) }
 
-updateWorldRedBoxesOverlap world =
-    (setGrow
-        world
-        ) .
-    (over
-        redBoxes
-        ( filter (boxOnPlayer $ head $ _player world) )
-        )
+--Will return True if the box is on the player position provided
+boxOnPlayer :: ( Float , Float ) -> Box -> Bool
+boxOnPlayer (px,py) box = not ( (px == (_boxX box)) && (py == (_boxY box)) )
+
+updateWorldGreenBoxesOverlap :: GameState -> GameState
+updateWorldGreenBoxesOverlap DeadState = DeadState
+updateWorldGreenBoxesOverlap world =
+    (setGrow world) .
+    (over greenBoxes ( filter (boxOnPlayer $ head $ _player world) ))
     $ world
 
+updateWorldRedBoxesOverlap :: GameState -> GameState
+updateWorldRedBoxesOverlap DeadState = DeadState
+updateWorldRedBoxesOverlap world =
+    let pl = head $ (_player world) in
+    if (foldl (||) False) . (map $ (not . (boxOnPlayer pl))) $ (_redBoxes world) then
+        if (_life world == 0) || ( ( (length $ _player world) == 1 )) then
+            DeadState
+        else
+            ( over player (tail) ) .
+            ( over life (pred) )
+            $ world
+    else
+        world
+
 --Is the player folded on himself
+playerOverlap :: [(Float,Float)] -> Bool
 playerOverlap (x:[]) = False
 playerOverlap (x:xs) = if foldl ( || ) (False) $ map (==x) xs then
         True
     else
         playerOverlap xs
 
+tryKill :: GameState -> GameState
+tryKill DeadState = DeadState
 tryKill world = if playerOverlap $ _player world then
         DeadState
     else
         world
 
+noGrow :: GameState -> GameState
+noGrow DeadState = DeadState
 noGrow world = world { _grow = False }
 
+updateWorld :: Float -> GameState -> IO GameState
 updateWorld _ DeadState = return DeadState
 updateWorld _ world = do
     return $
          tryKill .
-         updateWorldPlayerPos .
-         updateWorldRedBoxesOverlap
+         updateWorldPlayerPos
          $ world
 
+main :: IO ()
 main = do
     playIO (InWindow gameWindowTitle (floor gameSize,floor gameSize) (0, 0))
         black
@@ -185,12 +222,21 @@ main = do
         eventOnWorld
         updateWorld
 
+drawPlayer :: (Float,Float) -> Picture
 drawPlayer (x,y) = Color (makeColor 1 1 1 1) $ Translate px py $ playerBody
     where px = x * gameScale
           py = y * gameScale
 
-drawRedBox box = Color (makeColor 1 0 0 1) $ Translate ( _redBoxX box * gameScale ) ( _redBoxY box * gameScale ) $ playerBody
+drawBox :: Box -> Color -> Picture
+drawBox box color = Color color $ Translate ( _boxX box * gameScale ) ( _boxY box * gameScale ) $ playerBody
 
+drawRedBox :: Box -> Picture
+drawRedBox box = drawBox box (makeColor 1 0 0 1)
+
+drawGreenBox :: Box -> Picture
+drawGreenBox box = drawBox box (makeColor 0 1 0 1)
+
+render :: GameState -> IO Picture
 render DeadState = return $ Pictures [ Scale (0.2) (0.2) $ Color ( makeColor 1 0 0 1 ) $ Translate ( -400 ) ( 0 ) $ Text "Presse f1 to start" ]
 render world = return $
-    Pictures $ ( map (drawPlayer) (_player world) ) ++ ( map (drawRedBox) $ _redBoxes world )
+    Pictures $ ( map (drawPlayer) (_player world) ) ++ ( map (drawRedBox) $ _redBoxes world ) ++ ( map (drawGreenBox) $ _greenBoxes world )
