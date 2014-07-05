@@ -25,6 +25,7 @@ makeLenses ''Box
 data GameState = GameState
     {
         --the player is a list of position
+        _coolDown :: Int ,
         _player :: [(Float,Float)] ,
         _life :: Int ,
         _grow :: Bool , -- will the player grow a block longer
@@ -44,7 +45,6 @@ init' x = init x
 
 gameScale = 10.0
 gameSize = 500.0
-coolDown = 1
 gameWindowTitle = "Snake"
 
 canTurn :: Direction -> Direction -> Bool
@@ -76,12 +76,17 @@ genBoxes (v1:v2:seq) n = ((  Box (prosValForPos v1) (prosValForPos v2)  ):( nl  
           nl = fst g
           g = genBoxes seq (n-1)
 
-initWorld :: IO GameState
-initWorld = do
+boxesOverlap :: Box -> Box -> Bool
+boxesOverlap b1 b2 = ( (_boxX b1) == (_boxX b2) ) && ( (_boxY b1) == (_boxY b2) )
+
+initWorld :: Int -> IO GameState
+initWorld d = do
     g <- getStdGen
     let (rb,g2) = genBoxes (randoms g :: [Integer]) 50
     let (gb,g3) = genBoxes (g2) 50
+    let gb2 = filter (\x ->not $ foldl (||) False (map (boxesOverlap x) rb) ) gb
     return $ GameState {
+        _coolDown = d ,
         _player = [(0,0)] ,
         _life = 10 ,
         _grow = False ,
@@ -89,7 +94,7 @@ initWorld = do
         _turned = False ,
         _movementCoolDown = 20 , 
         _redBoxes = rb ,
-        _greenBoxes = gb
+        _greenBoxes = gb2
     }
 
 eventKey :: Event -> Maybe Direction
@@ -102,6 +107,10 @@ eventKey _ = Nothing
 isf1 :: Event -> Bool
 isf1 (EventKey (SpecialKey KeyF1) Down _ _) = True
 isf1 _ = False
+
+isf2 :: Event -> Bool
+isf2 (EventKey (SpecialKey KeyF2) Down _ _) = True
+isf2 _ = False
 
 turnPlayer :: Maybe Direction -> GameState -> GameState
 turnPlayer _ DeadState = DeadState
@@ -118,10 +127,14 @@ turnPlayer e w =
 eventOnWorld :: Event -> GameState -> IO GameState
 eventOnWorld event DeadState =
     if isf1 event then do
-        w <- initWorld
+        w <- initWorld 1
         return w
     else
-        return DeadState
+        if isf2 event then do
+            w <- initWorld 2
+            return w
+        else
+            return DeadState
 eventOnWorld event world = do
     return $ if mCanTurn key $ _playerDirection world then
         turnPlayer key world
@@ -152,7 +165,7 @@ updateWorldPlayerPos world =
                     (movePlayer (head l) (_playerDirection world)):( init' l )
               )
         ) .
-        ( set movementCoolDown coolDown ) $ world
+        ( set movementCoolDown (_coolDown world) ) $ world
     else
         over movementCoolDown (pred) world
 
@@ -236,7 +249,15 @@ drawRedBox box = drawBox box (makeColor 1 0 0 1)
 drawGreenBox :: Box -> Picture
 drawGreenBox box = drawBox box (makeColor 0 1 0 1)
 
+drawLife world = Scale (0.15) (0.15) $ Color ( makeColor 0.5 0.5 1 1 ) $ Translate ( -400 ) ( -400 ) $ Text ("life : " ++ (show $ _life world))
+
 render :: GameState -> IO Picture
 render DeadState = return $ Pictures [ Scale (0.2) (0.2) $ Color ( makeColor 1 0 0 1 ) $ Translate ( -400 ) ( 0 ) $ Text "Presse f1 to start" ]
 render world = return $
-    Pictures $ ( map (drawPlayer) (_player world) ) ++ ( map (drawRedBox) $ _redBoxes world ) ++ ( map (drawGreenBox) $ _greenBoxes world )
+    Pictures $
+        ( drawLife world ) :
+        (
+            ( map (drawPlayer) (_player world) ) ++
+            ( map (drawRedBox) $ _redBoxes world ) ++
+            ( map (drawGreenBox) $ _greenBoxes world )
+        )
