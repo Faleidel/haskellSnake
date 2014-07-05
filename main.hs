@@ -33,7 +33,8 @@ data GameState = GameState
         _turned :: Bool ,
         _movementCoolDown :: Int ,
         _redBoxes :: [Box] ,
-        _greenBoxes :: [Box]
+        _greenBoxes :: [Box] ,
+        _yellowBoxes :: [Box]
     }
     | DeadState -- main menu and game over state
     deriving Show
@@ -79,12 +80,17 @@ genBoxes (v1:v2:seq) n = ((  Box (prosValForPos v1) (prosValForPos v2)  ):( nl  
 boxesOverlap :: Box -> Box -> Bool
 boxesOverlap b1 b2 = ( (_boxX b1) == (_boxX b2) ) && ( (_boxY b1) == (_boxY b2) )
 
+--will remove boxes of bs1 if they overlap bs2
+filterBoxesOverlap bs2 bs1 = filter (\x ->not $ foldl (||) False (map (boxesOverlap x) bs2) ) bs1
+
 initWorld :: Int -> IO GameState
 initWorld d = do
     g <- getStdGen
     let (rb,g2) = genBoxes (randoms g :: [Integer]) 50
     let (gb,g3) = genBoxes (g2) 50
-    let gb2 = filter (\x ->not $ foldl (||) False (map (boxesOverlap x) rb) ) gb
+    let (yb,g4) = genBoxes (g3) 10
+    let gb2 = filterBoxesOverlap rb gb
+    let yb2 = (filterBoxesOverlap rb) . (filterBoxesOverlap gb) $ yb
     return $ GameState {
         _coolDown = d ,
         _player = [(0,0)] ,
@@ -94,7 +100,8 @@ initWorld d = do
         _turned = False ,
         _movementCoolDown = 20 , 
         _redBoxes = rb ,
-        _greenBoxes = gb2
+        _greenBoxes = gb2 ,
+        _yellowBoxes = yb2
     }
 
 eventKey :: Event -> Maybe Direction
@@ -155,6 +162,7 @@ updateWorldPlayerPos world =
         ( set turned (False) ) .
         updateWorldRedBoxesOverlap .
         updateWorldGreenBoxesOverlap .
+        updateWorldYellowBoxesOverlap .
         noGrow .
         (
           over player
@@ -182,6 +190,20 @@ updateWorldGreenBoxesOverlap DeadState = DeadState
 updateWorldGreenBoxesOverlap world =
     (setGrow world) .
     (over greenBoxes ( filter (boxOnPlayer $ head $ _player world) ))
+    $ world
+
+tryAddLife :: GameState -> GameState -> GameState
+tryAddLife w1 w2 =
+    if (length $ _yellowBoxes w1) == (length $ _yellowBoxes w2) then
+        w2
+    else
+        over life (succ) w2
+
+updateWorldYellowBoxesOverlap :: GameState -> GameState
+updateWorldYellowBoxesOverlap DeadState = DeadState
+updateWorldYellowBoxesOverlap world =
+    (tryAddLife world) .
+    (over yellowBoxes ( filter (boxOnPlayer $ head $ _player world) ))
     $ world
 
 updateWorldRedBoxesOverlap :: GameState -> GameState
@@ -249,6 +271,9 @@ drawRedBox box = drawBox box (makeColor 1 0 0 1)
 drawGreenBox :: Box -> Picture
 drawGreenBox box = drawBox box (makeColor 0 1 0 1)
 
+drawYellowBox :: Box -> Picture
+drawYellowBox box = drawBox box (makeColor 0 1 1 1)
+
 drawLife world = Scale (0.15) (0.15) $ Color ( makeColor 0.5 0.5 1 1 ) $ Translate ( -400 ) ( -400 ) $ Text ("life : " ++ (show $ _life world))
 
 render :: GameState -> IO Picture
@@ -259,5 +284,6 @@ render world = return $
         (
             ( map (drawPlayer) (_player world) ) ++
             ( map (drawRedBox) $ _redBoxes world ) ++
+            ( map (drawYellowBox) $ _yellowBoxes world ) ++
             ( map (drawGreenBox) $ _greenBoxes world )
         )
