@@ -1,2 +1,2 @@
 A snake game in haskell.
-The game use gloss librabry.
+The game use gloss and lens libraries.
